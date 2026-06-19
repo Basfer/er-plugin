@@ -1,0 +1,19 @@
+```
+# Compiled and build artifacts
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.dpl
+*.map
+*.log
+*.tmp
+*.bak
+*.~*
+# Dependencies
+__history/
+# Editors
+.DS_Store
+Thumbs.db
+```

@@ -1,0 +1,28 @@
+{
+  "name": "ERModelBuilder",
+  "version": "1.0.0",
+  "description": "ER Model Builder plugin for PL/SQL Developer 15",
+  "author": "Plugin Developer",
+  "targets": {
+    "plugin": {
+      "output": "ERModelBuilder.dll",
+      "type": "sharedlib"
+    }
+  },
+  "dependencies": [
+    "Oracle OCI",
+    "PL/SQL Developer API (pdevapi.dll)"
+  ],
+  "files": [
+    "src/ERModelBuilder.dpr",
+    "src/uPluginMain.pas",
+    "src/uDataModel.pas",
+    "src/uMetadataExtractor.pas",
+    "src/uSQLParser.pas",
+    "src/uERDiagramForm.pas",
+    "src/uERDiagramForm.dfm",
+    "src/uJsonSerializer.pas",
+    "src/uXmlSerializer.pas",
+    "src/uConstants.pas"
+  ]
+}
