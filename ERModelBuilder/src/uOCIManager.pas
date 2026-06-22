@@ -315,14 +315,29 @@ type
     Role: Integer;    // OCI_DEFAULT, OCI_SYSDBA, OCI_SYSOPER
   end;
 
+  TOCIColumnInfo = record
+    Name: string;
+    DataType: Integer;
+    Size: Integer;
+    ValueBuf: PAnsiChar;
+    IndBuf: SmallInt;
+  end;
+  TOCIColumnInfoArray = TArray<TOCIColumnInfo>;
+
   TOCIQueryResult = class
   private
     FColumnNames: TStringList;
     FColumnTypes: TArray<Integer>;
     FRows: TList<TArray<string>>;
     FCurrentRow: Integer;
+    FStmt: POCIStmt;
+    FOCILib: TOCILibrary;
+    FErr: POCIError;
+    FColInfos: TOCIColumnInfoArray;
+    FOwnsData: Boolean;
+    procedure FetchRow;
   public
-    constructor Create;
+    constructor Create(AOCILib: TOCILibrary; AErr: POCIError);
     destructor Destroy; override;
     procedure Clear;
     function Next: Boolean;
@@ -588,27 +603,76 @@ end;
 
 { TOCIQueryResult }
 
-constructor TOCIQueryResult.Create;
+constructor TOCIQueryResult.Create(AOCILib: TOCILibrary; AErr: POCIError);
 begin
   inherited Create;
   FColumnNames := TStringList.Create;
   FRows := TList<TArray<string>>.Create;
   FCurrentRow := -1;
+  FOCILib := AOCILib;
+  FErr := AErr;
+  FStmt := nil;
+  FOwnsData := False;
+  SetLength(FColInfos, 0);
 end;
 
 destructor TOCIQueryResult.Destroy;
+var
+  i: Integer;
 begin
+  // Free column buffers
+  for i := 0 to Length(FColInfos) - 1 do
+  begin
+    if Assigned(FColInfos[i].ValueBuf) then
+      FreeMem(FColInfos[i].ValueBuf);
+  end;
+  
+  if FOwnsData and Assigned(FStmt) then
+    FOCILib.HandleFree(FStmt, OCI_HTYPE_STMT);
+    
   FRows.Free;
   FColumnNames.Free;
   inherited Destroy;
 end;
 
 procedure TOCIQueryResult.Clear;
+var
+  i: Integer;
 begin
+  // Free column buffers
+  for i := 0 to Length(FColInfos) - 1 do
+  begin
+    if Assigned(FColInfos[i].ValueBuf) then
+      FreeMem(FColInfos[i].ValueBuf);
+  end;
+  
+  SetLength(FColInfos, 0);
   FColumnNames.Clear;
   SetLength(FColumnTypes, 0);
   FRows.Clear;
   FCurrentRow := -1;
+end;
+
+procedure TOCIQueryResult.FetchRow;
+var
+  j: Integer;
+  RowData: TArray<string>;
+  RetCode: Integer;
+begin
+  RetCode := FOCILib.StmtFetch(FStmt, FErr, 1, OCI_NEXT, OCI_DEFAULT);
+  if (RetCode = OCI_NO_DATA) or (RetCode <> OCI_SUCCESS) then
+    Exit;
+
+  SetLength(RowData, Length(FColInfos));
+  for j := 0 to Length(FColInfos) - 1 do
+  begin
+    if FColInfos[j].IndBuf < 0 then
+      RowData[j] := ''  // NULL value
+    else
+      RowData[j] := string(FColInfos[j].ValueBuf);
+  end;
+
+  FRows.Add(RowData);
 end;
 
 function TOCIQueryResult.Next: Boolean;
@@ -927,17 +991,14 @@ var
   Stmt: POCIStmt;
   RetCode: Integer;
   ColCount: SizeUInt;
-  i, j: Integer;
+  i: Integer;
   ColName: array[0..255] of AnsiChar;
   ColNameLen: SizeUInt;
-  ColType: Integer;
   ColSize: Integer;
-  ValueBuf: PAnsiChar;
-  IndBuf: SmallInt;
-  RowData: TArray<string>;
   SQLAnsi: AnsiString;
 begin
-  Result := TOCIQueryResult.Create;
+  Result := TOCIQueryResult.Create(FOCILib, FErr);
+  Result.FOwnsData := True;
   FLastError := '';
 
   if not FConnected then
@@ -953,6 +1014,8 @@ begin
     FLastError := 'Failed to allocate statement handle';
     Exit;
   end;
+
+  Result.FStmt := Stmt;
 
   try
     // Prepare statement
@@ -983,7 +1046,7 @@ begin
     end;
 
     // Get column information and define columns
-    SetLength(RowData, ColCount);
+    SetLength(Result.FColInfos, ColCount);
     for i := 1 to ColCount do
     begin
       // Get column name
@@ -998,30 +1061,27 @@ begin
       end;
       Result.FColumnNames.Add(string(ColName));
 
-      // For simplicity, define all columns as strings with max size
-      // In production, you'd get actual column types and sizes
+      // Define all columns as strings with max size
       ColSize := 4000;
-      GetMem(ValueBuf, ColSize + 1);
-      FillChar(ValueBuf^, ColSize + 1, 0);
-      IndBuf := 0;
+      GetMem(Result.FColInfos[i-1].ValueBuf, ColSize + 1);
+      FillChar(Result.FColInfos[i-1].ValueBuf^, ColSize + 1, 0);
+      Result.FColInfos[i-1].IndBuf := 0;
+      Result.FColInfos[i-1].Size := ColSize;
 
       RetCode := FOCILib.DefineByPos(Stmt, POCIDefine(Pointer(0)), FErr, i,
-        ValueBuf, ColSize, SQLT_STR, @IndBuf, nil, nil, OCI_DEFAULT);
+        Result.FColInfos[i-1].ValueBuf, ColSize, SQLT_STR, 
+        @Result.FColInfos[i-1].IndBuf, nil, nil, OCI_DEFAULT);
       if RetCode <> OCI_SUCCESS then
       begin
-        FreeMem(ValueBuf);
         FLastError := GetLastOCIError;
         Exit;
       end;
-
-      // Store buffer pointer for later retrieval (simplified approach)
-      // In real implementation, you'd use a more sophisticated method
     end;
 
-    // Fetch rows
+    // Fetch all rows
     while True do
     begin
-      RetCode := FOCILib.StmtFetch(Stmt, FErr, 1, OCI_FETCH_FIRST, OCI_DEFAULT);
+      RetCode := FOCILib.StmtFetch(Stmt, FErr, 1, OCI_NEXT, OCI_DEFAULT);
       if RetCode = OCI_NO_DATA then
         Break;
       if RetCode <> OCI_SUCCESS then
@@ -1030,17 +1090,11 @@ begin
         Exit;
       end;
 
-      // In a real implementation, you'd retrieve the actual values from define buffers
-      // This is a simplified version that would need proper buffer management
-      SetLength(RowData, ColCount);
-      for j := 0 to ColCount - 1 do
-        RowData[j] := ''; // Placeholder - actual value retrieval needed
-
-      Result.FRows.Add(RowData);
+      Result.FetchRow;
     end;
 
   finally
-    FOCILib.HandleFree(Stmt, OCI_HTYPE_STMT);
+    // Statement handle will be freed in TOCIQueryResult.Destroy
   end;
 end;
 
