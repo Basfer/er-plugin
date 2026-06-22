@@ -4,7 +4,8 @@ interface
 
 uses
   Windows, Messages, SysUtils, Classes, Controls, Forms, Menus,
-  uConstants, uDataModel, uMetadataExtractor, uSQLParser, uJsonSerializer, uXmlSerializer;
+  uConstants, uDataModel, uMetadataExtractor, uSQLParser, uJsonSerializer, 
+  uXmlSerializer, uERDiagramForm;
 
 // PL/SQL Developer Plugin API types and constants
 const
@@ -143,22 +144,27 @@ begin
         Exit;
       end;
       
-      // Show the ER diagram form (to be implemented)
-      // ShowERDiagramForm(Model);
-      
-      // For now, just save to JSON as demo
+      // Show the ER diagram form
       if Assigned(Model) and (Model.GetTableCount > 0) then
       begin
-        JsonSer := TJsonSerializer.Create;
         try
-          JsonSer.SaveToFile(Model, 'C:\temp\er_model.json');
-          MessageBox(0, 
-            PChar('ER Model built successfully!' + #13#10 + 
-                  Format('Tables: %d', [Model.GetTableCount]) + #13#10 +
-                  'Saved to C:\temp\er_model.json'),
-            'ER Model Builder', MB_OK or MB_ICONINFORMATION);
-        finally
-          JsonSer.Free;
+          // Auto-layout tables before showing
+          Model.AutoLayout;
+          
+          // Create and show the diagram form
+          var DiagramForm := TERDiagramForm.CreateWithModel(Application, Model);
+          try
+            DiagramForm.ShowModal;
+          finally
+            // Model is owned by the caller, don't free it here
+            DiagramForm.Free;
+          end;
+        except
+          on E: Exception do
+          begin
+            MessageBox(0, PChar('Error displaying diagram: ' + E.Message), 
+              'ER Model Builder', MB_OK or MB_ICONERROR);
+          end;
         end;
       end
       else
